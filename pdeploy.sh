@@ -154,12 +154,46 @@ UPLOAD_TIME=$((UPLOAD_END - UPLOAD_START))
 
 echo -e "${GREEN}Files uploaded successfully in ${UPLOAD_TIME}s${NC}"
 
+# Update Traefik configuration for web apps
+if [ "$APP_TYPE" = "web" ]; then
+    echo -e "${YELLOW}Updating Traefik configuration...${NC}"
+
+    ssh -i "$SSH_KEY" "$SSH_USER@$SERVER" "bash -s" << EOF
+APP_NAME="$APP_NAME"
+WEB_PORT="$WEB_PORT"
+WEB_DOMAIN="$WEB_DOMAIN"
+
+# Recreate Traefik dynamic configuration
+cat > /opt/traefik/dynamic/\$APP_NAME.yml << DYNAMIC
+http:
+  routers:
+    \$APP_NAME:
+      rule: "Host(\\\`\$WEB_DOMAIN\\\`)"
+      service: \$APP_NAME
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    \$APP_NAME:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:\$WEB_PORT"
+DYNAMIC
+
+echo "Traefik configuration updated for \$APP_NAME (port \$WEB_PORT)"
+EOF
+fi
+
 # Install dependencies and start service
 echo -e "${YELLOW}Installing dependencies and starting service...${NC}"
 
 ssh -i "$SSH_KEY" "$SSH_USER@$SERVER" "bash -s" << EOF
 set -e
 APP_NAME="$APP_NAME"
+APP_TYPE="$APP_TYPE"
+WEB_PORT="$WEB_PORT"
 APP_DIR="/opt/apps/\$APP_NAME"
 
 cd "\$APP_DIR"
@@ -176,16 +210,88 @@ echo "Starting \$APP_NAME service..."
 systemctl start \$APP_NAME.service
 
 # Check service status
-sleep 2
-if systemctl is-active --quiet \$APP_NAME.service; then
-    echo "Service \$APP_NAME is running successfully!"
-    exit 0
-else
+echo "Waiting for service to initialize..."
+sleep 3
+
+if ! systemctl is-active --quiet \$APP_NAME.service; then
     echo "Error: Service failed to start"
     echo "Recent logs:"
     journalctl -u \$APP_NAME.service -n 20 --no-pager
     exit 1
 fi
+
+echo "✓ Service \$APP_NAME is running"
+
+# Additional checks for web applications
+if [ "\$APP_TYPE" = "web" ]; then
+    echo "Running web app validation checks..."
+
+    # Extract actual port from app logs
+    sleep 2  # Give app time to bind to port
+    ACTUAL_PORT=\$(journalctl -u \$APP_NAME.service -n 50 --no-pager | grep -oP '(?<=:)\d{4,5}(?=/|\s|$)' | head -1)
+
+    if [ -z "\$ACTUAL_PORT" ]; then
+        # Fallback: check for common patterns
+        ACTUAL_PORT=\$(journalctl -u \$APP_NAME.service -n 50 --no-pager | grep -iE 'running on|listening on|port' | grep -oP '\d{4,5}' | head -1)
+    fi
+
+    # Verify port configuration matches
+    if [ -n "\$ACTUAL_PORT" ] && [ "\$ACTUAL_PORT" != "\$WEB_PORT" ]; then
+        echo "✗ ERROR: Port mismatch detected!"
+        echo ""
+        echo "  Configured port (WEB_PORT): \$WEB_PORT"
+        echo "  Actual port from app logs:  \$ACTUAL_PORT"
+        echo ""
+        echo "App logs showing port:"
+        journalctl -u \$APP_NAME.service -n 20 --no-pager | grep -iE 'running|listening|port|:\d{4}'
+        echo ""
+        echo "FIX: Update pdeploy.config to set WEB_PORT=\$ACTUAL_PORT"
+        exit 1
+    fi
+
+    # Check if app is listening on the configured port
+    if netstat -tuln 2>/dev/null | grep -q ":\$WEB_PORT " || ss -tuln 2>/dev/null | grep -q ":\$WEB_PORT "; then
+        echo "✓ App is listening on port \$WEB_PORT"
+    else
+        echo "✗ WARNING: App is NOT listening on port \$WEB_PORT"
+        echo ""
+        echo "Checking what ports are in use:"
+        netstat -tuln 2>/dev/null | grep LISTEN | grep -E ':(80|443|[0-9]{4})' || ss -tuln 2>/dev/null | grep LISTEN
+        echo ""
+        echo "ERROR: App failed to bind to expected port!"
+        exit 1
+    fi
+
+    # Test if backend responds
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:\$WEB_PORT/ 2>/dev/null | grep -q "^[2345]"; then
+        echo "✓ Backend responds on http://localhost:\$WEB_PORT/"
+    else
+        echo "⚠ WARNING: Backend doesn't respond (may still be initializing)"
+    fi
+
+    # Check Traefik status and reload config
+    if docker ps | grep -q traefik; then
+        echo "✓ Traefik reverse proxy is running"
+
+        # Verify Traefik config exists
+        if [ -f "/opt/traefik/dynamic/\$APP_NAME.yml" ]; then
+            echo "✓ Traefik configuration found"
+            echo "Reloading Traefik to apply config changes..."
+            docker restart traefik > /dev/null 2>&1
+            sleep 2
+            echo "✓ Traefik reloaded"
+        else
+            echo "✗ WARNING: Traefik config missing at /opt/traefik/dynamic/\$APP_NAME.yml"
+        fi
+    else
+        echo "✗ WARNING: Traefik container is not running"
+        echo "  Try: docker restart traefik"
+    fi
+fi
+
+echo ""
+echo "Deployment validation complete!"
+exit 0
 EOF
 
 if [ $? -eq 0 ]; then
