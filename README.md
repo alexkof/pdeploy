@@ -7,7 +7,7 @@ Universal bash scripts for deploying Python bot and web applications to Ubuntu s
 - **One-command deployment** - Deploy Python apps with a single command
 - **Automatic SSL** - Let's Encrypt SSL certificates for web apps via Traefik
 - **Auto-restart** - Systemd service ensures your app restarts on failure
-- **Web-based management** - Cockpit UI for server and service monitoring
+- **Web-based management** - Optional Cockpit UI for server and service monitoring
 - **Clean deployment** - Standard `/opt/apps/{APP_NAME}` structure
 - **Idempotent** - Safe to run multiple times
 - **Minimal dependencies** - Only requires bash and SSH locally
@@ -68,15 +68,28 @@ Run initial deployment:
 This will:
 - Connect to your server
 - Install Python and system dependencies
-- Install Cockpit web UI for server management
-- Optionally configure Cockpit password and disable SSH password auth (recommended)
 - Create virtual environment
 - Deploy your application
 - Set up systemd service
 - Install Docker and Traefik with SSL (for web apps)
 - Start your application
 
-### 3. Updates
+### 3. Cockpit (Optional)
+
+Install Cockpit for web-based server management:
+
+```bash
+./cockpit-init.sh
+```
+
+This will:
+- Install Cockpit web UI
+- Optionally create an admin user for Cockpit access
+- Optionally disable SSH password authentication (key-only, recommended)
+
+Access at `https://your-server-ip:9090` or use `./cockpit-tunnel.sh` for SSH tunneling.
+
+### 4. Updates
 
 For subsequent deployments:
 
@@ -192,17 +205,10 @@ Traefik config (web apps): `/opt/traefik/`
 
 ### Web UI (Cockpit)
 
-After running `pdeploy-init.sh`, access the server management UI:
+If you installed Cockpit using `./cockpit-init.sh`, you can access the web-based management UI:
 
-**If you created admin user during setup:**
 - **URL:** `https://your-server-ip:9090` or use `./cockpit-tunnel.sh`
-- **Login:** Admin username and password you set
-- **Access:** User has sudo privileges
-- **Security:** SSH password auth is disabled (key-only)
-
-**If you skipped user setup:**
-- Use SSH tunnel: `./cockpit-tunnel.sh`
-- Or create user manually: `ssh user@server 'adduser admin && usermod -aG sudo admin'`
+- **Login:** Admin username and password (if you created one during Cockpit setup)
 
 From Cockpit you can:
 - Monitor server resources (CPU, memory, disk)
@@ -210,6 +216,8 @@ From Cockpit you can:
 - View logs in real-time
 - Monitor Docker containers (for web apps with Traefik)
 - Manage server updates
+
+If you haven't installed Cockpit yet, run `./cockpit-init.sh` to set it up.
 
 ### Command Line Management
 
@@ -283,7 +291,7 @@ cd tests/bot-app/
 - Accept the self-signed certificate warning in your browser
 
 ### Can't Login to Cockpit
-- If you skipped user setup during init, create admin user: `ssh user@server 'adduser admin && usermod -aG sudo admin'`
+- If you skipped user setup during Cockpit installation, create admin user: `ssh user@server 'adduser admin && usermod -aG sudo admin'`
 - Root login is disabled by default in Cockpit for security
 - Use the admin user you created, not root
 - Or use the SSH tunnel method: `./cockpit-tunnel.sh`
@@ -292,7 +300,7 @@ cd tests/bot-app/
 
 ### SSH Password Authentication
 
-During `pdeploy-init.sh`, you can choose to:
+During `./cockpit-init.sh` setup, you can optionally:
 1. Create a separate admin user with sudo access for Cockpit
 2. Set a password for that user
 3. Disable SSH password authentication (key-only)
@@ -304,17 +312,15 @@ During `pdeploy-init.sh`, you can choose to:
 - ✅ Admin user has sudo access for server management
 - ✅ Deployment scripts continue to work normally with SSH keys
 
-**If you choose "no":**
-- SSH password auth remains enabled (less secure)
-- You can create admin user manually later
-- Root login to Cockpit is disabled by default
+**Note:** Cockpit installation is completely optional and separate from app deployment
 
 ## Architecture
 
 ### Implementation Approach
 - Uses SSH with heredoc to execute remote commands
-- All logic contained in 2 main script files
-- Future consideration: May split to separate server-side scripts if complexity grows
+- Main deployment scripts: `pdeploy-init.sh` (initial setup) and `pdeploy.sh` (updates)
+- Optional Cockpit setup: `cockpit-init.sh` (separate, can run anytime)
+- Helper scripts: `diagnose.sh`, `check-traefik.sh`, `cockpit-tunnel.sh`
 
 ### For Web Applications
 - Traefik runs as Docker container

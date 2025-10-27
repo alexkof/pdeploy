@@ -71,64 +71,8 @@ if ! ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$SSH_US
 fi
 echo -e "${GREEN}SSH connection successful${NC}"
 
-# Ask about Cockpit password setup
-echo ""
-echo -e "${YELLOW}Cockpit Configuration:${NC}"
-echo "Cockpit will be installed for web-based server management."
-echo ""
-read -p "Do you want to create an admin user for Cockpit and disable SSH password authentication? [y/N]: " -n 1 -r
-echo ""
-
-SETUP_COCKPIT_PASSWORD="no"
-COCKPIT_USER_PASSWORD=""
-COCKPIT_USERNAME=""
-
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "This will:"
-    echo "  1. Create a new admin user (with sudo access)"
-    echo "  2. Set a password for Cockpit login"
-    echo "  3. Disable SSH password authentication (keys only)"
-    echo "  4. Keep your SSH key authentication working"
-    echo ""
-
-    # Ask for username
-    while true; do
-        read -p "Enter username for admin user [default: admin]: " COCKPIT_USERNAME
-        COCKPIT_USERNAME=${COCKPIT_USERNAME:-admin}
-
-        # Validate username
-        if [[ "$COCKPIT_USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-            break
-        else
-            echo -e "${RED}Invalid username. Use lowercase letters, numbers, underscore, hyphen only.${NC}"
-        fi
-    done
-
-    # Ask for password
-    while true; do
-        read -sp "Enter password for user '$COCKPIT_USERNAME': " COCKPIT_USER_PASSWORD
-        echo ""
-        read -sp "Confirm password: " COCKPIT_USER_PASSWORD_CONFIRM
-        echo ""
-
-        if [ "$COCKPIT_USER_PASSWORD" = "$COCKPIT_USER_PASSWORD_CONFIRM" ]; then
-            if [ -n "$COCKPIT_USER_PASSWORD" ]; then
-                SETUP_COCKPIT_PASSWORD="yes"
-                echo -e "${GREEN}User '$COCKPIT_USERNAME' will be created${NC}"
-                break
-            else
-                echo -e "${RED}Password cannot be empty. Try again.${NC}"
-            fi
-        else
-            echo -e "${RED}Passwords do not match. Try again.${NC}"
-        fi
-    done
-else
-    echo -e "${YELLOW}Skipping Cockpit user setup. You can create one later manually.${NC}"
-fi
-
 # Execute server setup via SSH with heredoc
+echo ""
 echo -e "${YELLOW}Setting up server...${NC}"
 
 ssh -i "$SSH_KEY" "$SSH_USER@$SERVER" "bash -s" << EOF
@@ -142,61 +86,12 @@ WEB_PORT="$WEB_PORT"
 WEB_DOMAIN="$WEB_DOMAIN"
 WEB_LETSENCRYPT_EMAIL="$WEB_LETSENCRYPT_EMAIL"
 APP_DIR="/opt/apps/\$APP_NAME"
-SETUP_COCKPIT_PASSWORD="$SETUP_COCKPIT_PASSWORD"
-COCKPIT_USER_PASSWORD="$COCKPIT_USER_PASSWORD"
-COCKPIT_USERNAME="$COCKPIT_USERNAME"
-SSH_USER="$SSH_USER"
 
 echo "Installing system dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq software-properties-common build-essential libssl-dev libffi-dev \
     python3-dev python3-pip python3-venv curl wget git > /dev/null
-
-# Install and configure Cockpit for web-based server management
-echo "Installing Cockpit..."
-apt-get install -y -qq cockpit cockpit-podman > /dev/null 2>&1 || apt-get install -y -qq cockpit > /dev/null
-systemctl enable --now cockpit.socket > /dev/null 2>&1
-# Allow Cockpit through UFW if it's active
-if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    ufw allow 9090/tcp > /dev/null 2>&1 || true
-fi
-echo "Cockpit installed and accessible at https://\$(hostname -I | awk '{print \$1}'):9090"
-
-# Configure Cockpit user and SSH security if requested
-if [ "\$SETUP_COCKPIT_PASSWORD" = "yes" ]; then
-    echo "Configuring Cockpit admin user and SSH security..."
-
-    # Create admin user if it doesn't exist
-    if ! id "\$COCKPIT_USERNAME" &>/dev/null; then
-        useradd -m -s /bin/bash "\$COCKPIT_USERNAME"
-        echo "Created user \$COCKPIT_USERNAME"
-    else
-        echo "User \$COCKPIT_USERNAME already exists"
-    fi
-
-    # Set password for the admin user
-    echo "\$COCKPIT_USERNAME:\$COCKPIT_USER_PASSWORD" | chpasswd
-    echo "Password set for user \$COCKPIT_USERNAME"
-
-    # Add user to sudo group
-    usermod -aG sudo "\$COCKPIT_USERNAME"
-    echo "User \$COCKPIT_USERNAME added to sudo group"
-
-    # Disable SSH password authentication (force key-only)
-    sed -i 's/^#*PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-    sed -i 's/^#*PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-    sed -i 's/^#*PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-
-    # Ensure these settings are in the config if not present
-    grep -q "^PasswordAuthentication" /etc/ssh/sshd_config || echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
-    grep -q "^PubkeyAuthentication" /etc/ssh/sshd_config || echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
-    grep -q "^PermitRootLogin" /etc/ssh/sshd_config || echo "PermitRootLogin prohibit-password" >> /etc/ssh/sshd_config
-
-    # Restart SSH service (Ubuntu uses 'ssh' not 'sshd')
-    systemctl restart ssh || systemctl restart sshd
-    echo "SSH password authentication disabled - key-only access configured"
-fi
 
 # Check if Python version is available
 echo "Checking Python version..."
@@ -544,15 +439,8 @@ if [ "$APP_TYPE" = "web" ]; then
     echo -e "${YELLOW}Note: DNS must point to $SERVER for SSL to work${NC}"
 fi
 echo ""
-echo "Server Management:"
-if [ "$SETUP_COCKPIT_PASSWORD" = "yes" ]; then
-    echo "Cockpit UI: https://$SERVER:9090 (or via tunnel: ./cockpit-tunnel.sh)"
-    echo "Login: $COCKPIT_USERNAME / [password you set]"
-    echo -e "${GREEN}✓ Admin user created with sudo access${NC}"
-    echo -e "${GREEN}✓ SSH password authentication disabled (key-only)${NC}"
-else
-    echo "Cockpit UI: Use SSH tunnel: ./cockpit-tunnel.sh"
-    echo "  Or create admin user: ssh $SSH_USER@$SERVER 'adduser admin && usermod -aG sudo admin'"
-    echo "  Then access: https://$SERVER:9090"
-fi
+echo "Next Steps:"
+echo "  - Update your app: ./pdeploy.sh"
+echo "  - Install Cockpit (web-based server management): ./cockpit-init.sh"
+echo "  - Diagnostics: ./diagnose.sh"
 echo -e "${GREEN}========================================${NC}"
